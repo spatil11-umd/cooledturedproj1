@@ -1,0 +1,105 @@
+import requests
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime
+
+# TMDB API Key
+api_key = 'b8efb431ca874795fa3bd90a9216e38b'
+
+# Google Sheets setup
+scope = ["https://spreadsheets.google.com/feeds",
+         "https://www.googleapis.com/auth/spreadsheets",
+         "https://www.googleapis.com/auth/drive.file",
+         "https://www.googleapis.com/auth/drive"]
+
+# Load credentials
+creds = ServiceAccountCredentials.from_json_keyfile_name(
+    r"C:\Users\12407\Downloads\optimum-web-454302-e0-f5b48548795c.json", scope
+)
+client = gspread.authorize(creds)
+
+# Open the Google Sheet
+spreadsheet = client.open_by_key("1ztcWL119qy67Ox7JsHp1cmiQ158yJ9abKlfAjUj6_AY")
+
+# Function to check if a sheet exists or create a new one
+def get_or_create_sheet(spreadsheet, sheet_name, headers):
+    try:
+        sheet = spreadsheet.worksheet(sheet_name)
+        print(f"Found sheet: {sheet_name}.")
+    except gspread.exceptions.WorksheetNotFound:
+        sheet = spreadsheet.add_worksheet(title=sheet_name, rows="1000", cols="8")
+        print(f"Created new sheet: {sheet_name}.")
+    
+    # Clear the sheet before updating it
+    sheet.clear()
+    sheet.insert_row(headers, 1)
+    return sheet
+
+# Get or create sheets for upcoming movies and TV shows
+upcoming_movies_sheet = get_or_create_sheet(spreadsheet, "Upcoming Movies",
+                                            ["Title", "Movie ID", "Release Date", "Rating", "Genre", "Synopsis", "Movie Link"])
+upcoming_tv_sheet = get_or_create_sheet(spreadsheet, "Upcoming TV Shows",
+                                        ["TV Show Title", "TV Show ID", "First Air Date", "Rating", "Genre", "Synopsis", "TV Show Link"])
+
+# Function to get genre dictionary
+def get_genres(content_type):
+    url = f"https://api.themoviedb.org/3/genre/{content_type}/list?api_key={api_key}&language=en-US"
+    response = requests.get(url)
+    
+    if response.status_code == 200:
+        genres = {genre['id']: genre['name'] for genre in response.json().get('genres', [])}
+        return genres
+    else:
+        print(f"Failed to fetch {content_type} genres. Status: {response.status_code}")
+        return {}
+
+# Fetch movie and TV genres
+movie_genres = get_genres("movie")
+tv_genres = get_genres("tv")
+
+# Function to fetch upcoming content
+def fetch_upcoming(url, content_type, genres):
+    items = []
+    response = requests.get(url)
+    
+    if response.status_code == 200:
+        data = response.json()
+        for item in data.get('results', []):
+            title = item.get('title', item.get('name', 'Unknown'))
+            content_id = item.get('id', 'N/A')
+            release_date = item.get('release_date') if content_type == "movie" else item.get('first_air_date')
+            rating = item.get('vote_average', 'N/A')
+            genre_ids = item.get('genre_ids', [])
+            genre_names = ", ".join([genres.get(gid, "Unknown") for gid in genre_ids])
+            synopsis = item.get('overview', 'No synopsis available.')
+            content_link = f"https://www.themoviedb.org/{content_type}/{content_id}"
+
+            print(f"{title} ({release_date}): {rating} - {genre_names} - {content_link}")
+
+            items.append([title, content_id, release_date or 'N/A', rating, genre_names, synopsis, content_link])
+    else:
+        print(f"Failed to get {content_type} data. Status: {response.status_code}")
+
+    return items
+
+# Fetch and store upcoming movies
+upcoming_movies_url = f"https://api.themoviedb.org/3/movie/upcoming?api_key={api_key}&language=en-US&page=1"
+upcoming_movies_data = fetch_upcoming(upcoming_movies_url, "movie", movie_genres)
+
+# Sort upcoming movies by release date
+upcoming_movies_data.sort(key=lambda x: datetime.strptime(x[2], '%Y-%m-%d') if x[2] != 'N/A' else datetime.max)
+
+if upcoming_movies_data:
+    upcoming_movies_sheet.append_rows(upcoming_movies_data)
+
+# Fetch and store upcoming TV shows
+upcoming_tv_url = f"https://api.themoviedb.org/3/tv/on_the_air?api_key={api_key}&language=en-US&page=1"
+upcoming_tv_data = fetch_upcoming(upcoming_tv_url, "tv", tv_genres)
+
+# Sort upcoming TV shows by first air date
+upcoming_tv_data.sort(key=lambda x: datetime.strptime(x[2], '%Y-%m-%d') if x[2] != 'N/A' else datetime.max)
+
+if upcoming_tv_data:
+    upcoming_tv_sheet.append_rows(upcoming_tv_data)
+
+print("Upcoming Movies and TV Shows have been updated successfully!")
